@@ -1,0 +1,18 @@
+models:
+  - name: weather_reports
+    columns:
+      - name: city
+      - name: temperature
+      - name: weather_descriptions
+      - name: wind_speed
+      - name: weather_time_local
+  
+  - name: daily_average
+    columns:
+      - name: city
+      - name: date
+        data_tests:
+          - not_null
+          - unique
+      - name: avg_temperature
+      - name: avg_wind_speed

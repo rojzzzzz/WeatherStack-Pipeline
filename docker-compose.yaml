@@ -1,0 +1,133 @@
+x-superset-user: &superset-user root
+x-superset-volumes: &superset-volumes
+  # /app/pythonpath_docker will be appended to the PYTHONPATH in the final container
+  - ./docker:/app/docker
+  - ./docker/superset_config.py:/app/pythonpath/superset_config.py 
+
+services:
+  db:
+    container_name: postgres_containe
+    image: postgres:14.17
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: db_user
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD:?Set POSTGRES_ROOT_PASSWORD in .env}
+      POSTGRES_DB: db
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./airflow_init.sql:/docker-entrypoint-initdb.d/airflow_init.sql:ro
+      - ./superset_init.sql:/docker-entrypoint-initdb.d/superset_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U db_user -d db"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      
+    networks:
+      - my_network
+
+  af:
+    container_name: airflow_containe
+    image: apache/airflow:3.3.2
+    ports:
+      - "8000:8080"
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://db_user:${POSTGRES_ROOT_PASSWORD:?Set POSTGRES_ROOT_PASSWORD in .env}@db:5432/airflow_db'
+    
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./api-request:/opt/airflow/api-request
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    networks:
+      - my_network
+    
+    command: >
+      bash -c "airflow db migrate && airflow standalone"
+  
+  dbt:
+    container_name: dbt_containe
+    image: ghcr.io/dbt-labs/dbt-postgres:1.9.latest 
+    volumes:
+      - ./dbt/dbt/my_project:/usr/app
+      - ./dbt/dbt:/root/.dbt
+    environment:
+      DBT_PROFILES_DIR: "/root/.dbt"
+      POSTGRES_ROOT_PASSWORD: ${POSTGRES_ROOT_PASSWORD:?Set POSTGRES_ROOT_PASSWORD in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - my_network
+    command: build
+
+  superset:
+    image: apache/superset:3.0.0-py310
+    env_file:
+      - path: ./docker/.env
+        required: true
+    command: ["/app/docker/docker-bootstrap.sh", "app"]
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    user: *superset-user
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    volumes: *superset-volumes
+    networks:
+      - my_network
+
+  superset-init:
+    image: apache/superset:3.0.0-py310
+    command: ["/app/docker/docker-init.sh"]
+    env_file:
+      - path: ./docker/.env
+        required: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    user: *superset-user
+    volumes: *superset-volumes
+    environment:
+      SUPERSET_FORCE_LOAD_EXAMPLES: "${SUPERSET_FORCE_LOAD_EXAMPLES:-}"
+    healthcheck:
+      disable: true
+    networks:
+      - my_network
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis:/data
+    networks:
+      - my_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+
+networks:
+  my_network:
+    driver: bridge
+
+volumes:
+  redis:
+    external: false
+  postgres_data:
+    external: false
